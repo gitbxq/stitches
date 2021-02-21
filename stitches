@@ -1,0 +1,73 @@
+#!/bin/bash
+
+echo -e "\033[32m
+
+  ╔═╗┌┬┐┬┌┬┐┌─┐┬ ┬┌─┐┌─┐
+  ╚═╗ │ │ │ │  ├─┤├┤ └─┐
+  ╚═╝ ┴ ┴ ┴ └─┘┴ ┴└─┘└─┘
+
+\033[0m"
+
+# 创建任务目录
+start_time=`date "+%Y%m%d%H%M"`
+mkdir results/"$start_time"
+
+# 生成子域名目标
+echo "Scanning subdomains..."
+for domain in `cat targets.txt`; do
+    python3 tools/Sublist3r/sublist3r.py -e baidu,bing,passivedns,threatcrowd,dnsdumpster,netcraft,virustotal -d $domain -o subdomains.txt >> results/"$start_time"/"$start_time"_sublister.log
+    for line in `cat subdomains.txt`; do
+        echo "http://$line" >> tasks.txt
+    done
+done
+echo "Subdomains scanning FINISHED."
+cp tasks.txt results/"$start_time"/"$start_time"_subdomains.txt
+
+# tasks.txt 中的目标总数，一行一个
+total_tasks=`sed -n '$=' tasks.txt`
+
+# 为当前任务创建目标日志文件并开始扫描
+echo "Tasks Scanning..."
+touch results/"$start_time"/"$start_time"_xray.log
+echo "Starting Xray..."
+nohup tools/xray_linux_amd64 webscan --listen 127.0.0.1:7777 --html-output results/"$start_time"/"$start_time.html" >> results/"$start_time"/"$start_time"_xray.log 2>&1 &
+echo "Starting crawlergo..."
+python3 tools/crawler.py > results/"$start_time"/"$start_time"_crawler.log 2>&1
+echo "Starting rad..."
+nohup bash tools/radium.sh >> results/"$start_time"/"$start_time"_radium.log 2>&1 &
+
+# 扫描结束后杀掉xray进程
+for (( point=1;point==1; ))
+do
+#    pscrawler=`ps -ef|grep crawler.py|awk '{print $4}'`
+    psrad=`ps -ef|grep rad_linux|awk '{print $4}'|head -1`
+    xraymeg=`sleep 3m;tail -2 results/"$start_time"/"$start_time"_xray.log`
+    if [[ $xraymeg == *"All pending requests"* && $psrad -eq 0 ]]; then
+        ps -ef |grep xray |awk '{print $2}'|xargs kill -9 > /dev/null 2>&1
+        rm tasks.txt subdomains.txt
+        break
+    fi
+done
+echo "Tasks Scanning FINISHED."
+
+# 定义报告时间
+datetime=`date "+%Y年%m月%d日%H时%M分"`
+
+# 调用企业微信API获取access_token
+# CorpId 处填写所注册企业微信企业ID
+# Secret 处填写自建应用的 Secret
+access_token=`curl "https://qyapi.weixin.qq.com/cgi-bin/gettoken?CorpId=corpid&corpsecret=Secret"|grep -oP '(?<=_token":").*(?=",)'`
+url="https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=$access_token"
+
+# 将扫描结果报告复制到 Web 服务器根目录，并调用企业微信API进行消息推送
+if [ -e results/"$start_time"/"$start_time".html ]; then
+
+# 将报告文件复制到 web 服务目录并赋予可读权限
+#    cp results/"$start_time"/"$start_time".html /var/www/html/
+#    chmod o+r /var/www/html/"$start_time".html
+    bash wechat/with_report.sh $datetime $total_tasks $start_time $url >> curlWeChat.log 2>&1
+else
+    bash wechat/without_report.sh $datetime $url >> curlWeChat.log 2>&1
+fi
+
+exit 0
